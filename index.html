@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>UNLUCKY XIII — a liminal horror micro-game</title>
+<style>
+  html, body { margin:0; padding:0; background:#000; height:100%; overflow:hidden; }
+  body { display:flex; align-items:center; justify-content:center; font-family: Georgia, 'Times New Roman', serif; }
+  #wrap { position:relative; width:min(100vw, 177.78vh); aspect-ratio:16/9; }
+  canvas { width:100%; height:100%; display:block; background:#0a0906; }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game" width="960" height="540"></canvas></div>
+<script>
+'use strict';
+/* ============================================================
+   UNLUCKY XIII — a liminal horror micro-game
+   Made in one day for the Tuesday the 13th Jam (theme: Unlucky XIII).
+   Creative scaffolding: designed & coded with AI assistance (Muse).
+   All art is drawn in code; all sound is synthesized live. No assets.
+   ============================================================ */
+const cv = document.getElementById('game');
+const ctx = cv.getContext('2d');
+const W = 960, H = 540;
+
+/* ---------------- world constants ---------------- */
+const WORLD = 6000;          // corridor length (px)
+const FLOOR_Y = 452;         // top of carpet
+const DOOR_XIII_X = 5620;    // the door
+const KEY_X = 3350;          // the brass key
+const DOOR_SPACING = 400;
+const DOOR_START = 620;
+
+/* ---------------- input ---------------- */
+const keys = {};
+let anyKeyPulse = false;
+addEventListener('keydown', e => {
+  if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' '].includes(e.key)) e.preventDefault();
+  if (!keys[e.key.toLowerCase()]) anyKeyPulse = true;
+  keys[e.key.toLowerCase()] = true;
+  initAudio();
+});
+addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+let touchDir = 0;
+cv.addEventListener('pointerdown', e => {
+  initAudio(); anyKeyPulse = true;
+  const r = cv.getBoundingClientRect();
+  touchDir = ((e.clientX - r.left) / r.width < 0.5) ? -1 : 1;
+});
+addEventListener('pointerup', () => { touchDir = 0; });
+addEventListener('pointercancel', () => { touchDir = 0; });
+function moveInput() {
+  let d = 0;
+  if (keys['arrowleft'] || keys['a']) d -= 1;
+  if (keys['arrowright'] || keys['d']) d += 1;
+  if (d === 0) d = touchDir;
+  return d;
+}
+
+/* ---------------- audio (all synthesized) ---------------- */
+let AC = null, humOsc = null, humGain = null, droneOsc = null;
+function initAudio() {
+  if (AC) { if (AC.state === 'suspended') AC.resume(); return; }
+  try {
+    AC = new (window.AudioContext || window.webkitAudioContext)();
+    humOsc = AC.createOscillator(); humOsc.type = 'sawtooth'; humOsc.frequency.value = 118;
+    const humOsc2 = AC.createOscillator(); humOsc2.type = 'sine'; humOsc2.frequency.value = 236;
+    const lp = AC.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 420;
+    humGain = AC.createGain(); humGain.gain.value = 0.0;
+    humOsc.connect(lp); humOsc2.connect(lp); lp.connect(humGain); humGain.connect(AC.destination);
+    humOsc.start(); humOsc2.start();
+    droneOsc = AC.createOscillator(); droneOsc.type = 'sine'; droneOsc.frequency.value = 55;
+    const dg = AC.createGain(); dg.gain.value = 0.012;
+    droneOsc.connect(dg); dg.connect(AC.destination); droneOsc.start();
+  } catch (e) { AC = null; }
+}
+function tone(freq, dur, type, vol, slideTo) {
+  if (!AC) return;
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type || 'sine'; o.frequency.value = freq;
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, AC.currentTime + dur);
+  g.gain.setValueAtTime(vol, AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime + dur);
+  o.connect(g); g.connect(AC.destination); o.start(); o.stop(AC.currentTime + dur);
+}
+function noiseBurst(dur, vol, freq) {
+  if (!AC) return;
+  const len = Math.floor(AC.sampleRate * dur);
+  const buf = AC.createBuffer(1, len, AC.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+  const src = AC.createBufferSource(); src.buffer = buf;
+  const f = AC.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = freq || 800;
+  const g = AC.createGain(); g.gain.value = vol;
+  src.connect(f); f.connect(g); g.connect(AC.destination); src.start();
+}
+function thump(vol) { tone(52, 0.16, 'sine', vol); }
+function footstep() { noiseBurst(0.09, 0.20, 300); tone(38, 0.1, 'sine', 0.12); }
+function pickupSound() { tone(1318, 0.12, 'sine', 0.08); setTimeout(() => tone(1760, 0.22, 'sine', 0.07), 70); }
+function rattleSound() { for (let i = 0; i < 3; i++) setTimeout(() => noiseBurst(0.05, 0.15, 1200), i * 90); }
+function stingSound() {
+  tone(220, 1.1, 'sawtooth', 0.16, 55); tone(233, 1.1, 'sawtooth', 0.16, 58);
+  tone(110, 1.2, 'triangle', 0.2, 40); noiseBurst(0.5, 0.25, 2000);
+}
+function creakSound() { tone(140, 0.8, 'sawtooth', 0.05, 62); setTimeout(() => { tone(392, 1.6, 'sine', 0.06); tone(587, 1.6, 'sine', 0.04); }, 500); }
+
+/* ---------------- game state ---------------- */
+let state = 'title'; // title | play | win | lose
+let player, figure, lights, cam, runTime, msg, msgT, endT;
+let score = 0, maxDoor = -1;
+const floaters = [];
+function addScore(n, worldX) {
+  score += n;
+  floaters.push({ x: worldX, text: '+' + n, t: 0, dur: 1.5 });
+}
+function reset() {
+  player = { x: 180, dir: 1, walk: 0, hasKey: false, speed: 172 };
+  figure = { x: 1250, active: true, banishes: 0, fade: 0, darkSpeed: 140 };
+  lights = { mode: 'on', t: 2.6, level: 1, next: 3.8 };
+  cam = 0; runTime = 0; msg = ''; msgT = 0; endT = 0;
+  score = 0; maxDoor = -1; floaters.length = 0;
+  showMsg('Find the brass key. Reach Door XIII.', 4.2);
+  setTimeout(() => { if (state === 'play') showMsg('It only moves in the dark.', 3.4); }, 4600);
+}
+function showMsg(t, dur) { msg = t; msgT = dur; }
+function progress() { return Math.max(0, Math.min(1, player.x / DOOR_XIII_X)); }
+
+/* ---------------- lights / figure logic ---------------- */
+let stepTimer = 0, heartTimer = 0;
+function updateLights(dt) {
+  const p = progress();
+  lights.t -= dt;
+  if (lights.mode === 'on') {
+    lights.level = (Math.random() < 0.06) ? 0.72 + Math.random() * 0.2 : 1; // micro flicker
+    if (lights.t <= 0) { lights.mode = 'flicker'; lights.t = 0.25 + Math.random() * 0.45; noiseBurst(0.05, 0.1, 3000); }
+  } else if (lights.mode === 'flicker') {
+    lights.level = Math.random() < 0.5 ? 0.15 : 0.9;
+    if (lights.t <= 0) {
+      if (Math.random() < 0.3) {
+        // fake-out: the lights recover... this time. No cycle can be timed.
+        lights.mode = 'on'; lights.t = 0.9 + Math.random() * 1.4; lights.level = 1;
+        noiseBurst(0.04, 0.08, 2600);
+      } else {
+        lights.mode = 'dark';
+        let dur = 0.8 + Math.random() * 1.7 + p * 0.6;   // every blackout a different length
+        if (Math.random() < 0.15) dur *= 1.8;            // and sometimes the dark stays
+        lights.t = dur; stepTimer = 0.3;
+        figure.darkSpeed = (128 + p * 85) * (0.85 + Math.random() * 0.4);
+      }
+    }
+  } else { // dark
+    lights.level = 0.03;
+    if (figure.active) {
+      figure.x += Math.sign(player.x - figure.x) * (figure.darkSpeed || 140) * dt;
+      stepTimer -= dt;
+      if (stepTimer <= 0) { footstep(); stepTimer = 0.34; }
+      if (Math.abs(figure.x - player.x) < 30) return lose();
+    }
+    if (lights.t <= 0) {
+      lights.mode = 'on';
+      lights.t = Math.max(1.4, 2.0 + Math.random() * 3.6 - p * 0.7);
+      lights.level = 1;
+      // banish: if it got close while you survived the dark, it dissolves — and comes back angrier, further ahead
+      if (figure.active && Math.abs(figure.x - player.x) < 300) {
+        figure.banishes++;
+        figure.fade = 1;
+        figure.x = player.x + 950 + Math.random() * 250;
+        if (figure.x > DOOR_XIII_X - 260) figure.x = player.x - 900; // never camp the door
+        if (figure.x < 80) figure.x = 80;
+        addScore(100, player.x); // it passed you by — and you lived
+      }
+    }
+  }
+  if (humGain) humGain.gain.value = (lights.mode === 'dark') ? 0.0 : 0.014 * lights.level + 0.004;
+  // heartbeat when close
+  if (figure.active && state === 'play') {
+    const d = Math.abs(figure.x - player.x);
+    if (d < 380) {
+      heartTimer -= dt;
+      if (heartTimer <= 0) { thump(0.10 + (1 - d / 380) * 0.16); heartTimer = 0.38 + (d / 380) * 0.55; }
+    }
+  }
+}
+
+/* ---------------- update ---------------- */
+function update(dt) {
+  if (state === 'title') { if (anyKeyPulse) { state = 'play'; reset(); } anyKeyPulse = false; return; }
+  if (state === 'win' || state === 'lose') {
+    endT += dt;
+    if (endT > 0.6 && (keys['r'] || anyKeyPulse)) { state = 'play'; reset(); }
+    anyKeyPulse = false; return;
+  }
+  runTime += dt;
+  if (msgT > 0) msgT -= dt;
+  for (let i = floaters.length - 1; i >= 0; i--) { floaters[i].t += dt; if (floaters[i].t >= floaters[i].dur) floaters.splice(i, 1); }
+  const d = moveInput();
+  if (d !== 0) {
+    player.dir = d;
+    player.x += d * player.speed * dt;
+    player.walk += dt * 9;
+    player.x = Math.max(60, Math.min(WORLD - 120, player.x));
+  }
+  // key pickup
+  if (!player.hasKey && Math.abs(player.x - KEY_X) < 34) {
+    player.hasKey = true; pickupSound(); showMsg('You take the brass key.', 2.6);
+  }
+  // score: passing doors — furthest door only, so there's no farming the same stretch
+  {
+    const di = Math.floor((player.x - 100 - DOOR_START) / DOOR_SPACING);
+    while (maxDoor < di && maxDoor < 12) { maxDoor++; addScore(25, player.x); }
+  }
+  // the door
+  if (Math.abs(player.x - DOOR_XIII_X) < 44) {
+    if (player.hasKey) return win();
+    if (!update._rattled || runTime - update._rattled > 2.5) { update._rattled = runTime; rattleSound(); showMsg('Locked. It needs a key.', 2.2); }
+  }
+  updateLights(dt);
+  // never let the player walk through it while the lights are on — it flickers away, ahead
+  if (lights.mode !== 'dark' && Math.abs(figure.x - player.x) < 26) {
+    figure.x = Math.min(player.x + 950, DOOR_XIII_X + 700);
+    noiseBurst(0.06, 0.08, 2400);
+    addScore(50, player.x); // you walked straight past it
+  }
+  cam = Math.max(0, Math.min(WORLD - W, player.x - W * 0.42));
+  anyKeyPulse = false;
+}
+function win() { score += 500; state = 'win'; endT = 0; creakSound(); if (humGain) humGain.gain.value = 0; }
+function lose() { state = 'lose'; endT = 0; stingSound(); if (humGain) humGain.gain.value = 0; }
+
+/* ---------------- drawing ---------------- */
+function doorNumber(i) {
+  const p = progress();
+  let n = i + 1;
+  // the corridor starts lying about its numbers as you go deeper
+  if (p > 0.42 && i % 4 === 2) n = 13;
+  if (p > 0.68 && i % 3 === 1) n = 13;
+  if (p > 0.86 && i % 2 === 0) n = 13;
+  return n;
+}
+function drawCorridor() {
+  const L = lights.level;
+  // wall
+  const wg = ctx.createLinearGradient(0, 0, 0, FLOOR_Y);
+  wg.addColorStop(0, '#8f8672'); wg.addColorStop(0.75, '#a39a80'); wg.addColorStop(1, '#7d7460');
+  ctx.fillStyle = wg; ctx.fillRect(0, 0, W, FLOOR_Y);
+  // ceiling
+  ctx.fillStyle = '#6d6656'; ctx.fillRect(0, 0, W, 64);
+  ctx.fillStyle = '#57523f'; ctx.fillRect(0, 64, W, 6);
+  // ceiling light panels
+  for (let wx = Math.floor(cam / 480) * 480; wx < cam + W + 480; wx += 480) {
+    const sx = wx - cam + 40;
+    ctx.fillStyle = '#3d3a30'; ctx.fillRect(sx, 14, 300, 26);
+    ctx.fillStyle = `rgba(255,246,214,${0.92 * L})`; ctx.fillRect(sx + 5, 18, 290, 18);
+  }
+  // wallpaper seams + wainscot
+  ctx.fillStyle = 'rgba(0,0,0,0.10)';
+  for (let wx = Math.floor(cam / 240) * 240; wx < cam + W + 240; wx += 240) ctx.fillRect(wx - cam, 70, 2, FLOOR_Y - 70);
+  ctx.fillStyle = '#5d5342'; ctx.fillRect(0, 342, W, 8);
+  ctx.fillStyle = '#4a4132'; ctx.fillRect(0, 350, W, 102);
+  // carpet
+  const cg = ctx.createLinearGradient(0, FLOOR_Y, 0, H);
+  cg.addColorStop(0, '#4d1620'); cg.addColorStop(1, '#2a0a10');
+  ctx.fillStyle = cg; ctx.fillRect(0, FLOOR_Y, W, H - FLOOR_Y);
+  ctx.fillStyle = 'rgba(212,175,55,0.20)';
+  for (let wx = Math.floor(cam / 120) * 120; wx < cam + W + 120; wx += 120) ctx.fillRect(wx - cam, FLOOR_Y + 34, 60, 3);
+  // doors
+  for (let i = 0, wx = DOOR_START; wx < WORLD - 300; i++, wx += DOOR_SPACING) {
+    if (wx < cam - 160 || wx > cam + W + 160) continue;
+    const sx = wx - cam;
+    ctx.fillStyle = '#3a3125'; ctx.fillRect(sx - 4, 168, 108, 284);
+    ctx.fillStyle = '#77683f'; ctx.fillRect(sx, 172, 100, 280);
+    ctx.fillStyle = '#65582f'; ctx.fillRect(sx + 12, 196, 76, 96); ctx.fillRect(sx + 12, 316, 76, 104);
+    ctx.fillStyle = '#d8cf9f'; ctx.fillRect(sx + 28, 142, 44, 22);
+    ctx.fillStyle = '#2c2517'; ctx.font = 'bold 15px Georgia'; ctx.textAlign = 'center';
+    ctx.fillText(String(doorNumber(i)), sx + 50, 158);
+    ctx.fillStyle = '#c9a227'; ctx.beginPath(); ctx.arc(sx + 86, 330, 5, 0, 7); ctx.fill();
+    // one door stands open onto nothing, late in the corridor
+    if (i === 9) {
+      ctx.fillStyle = '#050505'; ctx.fillRect(sx + 4, 176, 92, 272);
+      ctx.fillStyle = '#191510'; ctx.fillRect(sx - 26, 176, 28, 272);
+    }
+  }
+  // DOOR XIII
+  {
+    const sx = DOOR_XIII_X - cam;
+    if (sx > -220 && sx < W + 220) {
+      ctx.fillStyle = '#0c0a08'; ctx.fillRect(sx - 62, 128, 128, 324);
+      ctx.fillStyle = '#241d16'; ctx.fillRect(sx - 54, 136, 112, 316);
+      ctx.strokeStyle = '#5a1616'; ctx.lineWidth = 3; ctx.strokeRect(sx - 44, 156, 92, 130); ctx.strokeRect(sx - 44, 306, 92, 118);
+      ctx.fillStyle = '#a31616'; ctx.font = 'bold 30px Georgia'; ctx.textAlign = 'center';
+      ctx.fillText('XIII', sx + 2, 116);
+      ctx.fillStyle = '#8f1d1d'; ctx.font = '13px Georgia';
+      ctx.fillText('· 13 ·', sx + 2, 300);
+      ctx.fillStyle = '#c9a227'; ctx.beginPath(); ctx.arc(sx + 42, 336, 6, 0, 7); ctx.fill();
+      ctx.fillStyle = '#000'; ctx.fillRect(sx + 40, 332, 4, 6);
+    }
+  }
+  // the key on the carpet
+  if (!player.hasKey) {
+    const sx = KEY_X - cam;
+    if (sx > -40 && sx < W + 40) {
+      const bob = Math.sin(runTime * 3) * 2;
+      ctx.strokeStyle = '#e8c84a'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(sx, FLOOR_Y + 52 + bob, 7, 0, 7); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(sx + 6, FLOOR_Y + 56 + bob); ctx.lineTo(sx + 22, FLOOR_Y + 62 + bob); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(sx + 17, FLOOR_Y + 60 + bob); ctx.lineTo(sx + 18, FLOOR_Y + 66 + bob); ctx.stroke();
+      if (Math.floor(runTime * 2) % 2 === 0) { ctx.fillStyle = '#fff6c9'; ctx.fillRect(sx - 2, FLOOR_Y + 42 + bob, 3, 3); }
+    }
+  }
+}
+function drawPlayer() {
+  const sx = player.x - cam, gy = FLOOR_Y + 66;
+  const bob = (moveInput() !== 0 && state === 'play') ? Math.abs(Math.sin(player.walk)) * 3 : 0;
+  ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.beginPath(); ctx.ellipse(sx, gy + 4, 20, 5, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#151312';
+  ctx.fillRect(sx - 5, gy - 58 - bob, 10, 30);            // torso
+  ctx.beginPath(); ctx.arc(sx, gy - 66 - bob, 8, 0, 7); ctx.fill(); // head
+  const lp = (moveInput() !== 0) ? Math.sin(player.walk) * 7 : 0;
+  ctx.fillRect(sx - 5 + lp, gy - 28, 4, 28); ctx.fillRect(sx + 1 - lp, gy - 28, 4, 28); // legs
+  ctx.fillRect(sx + (player.dir > 0 ? 3 : -8), gy - 54 - bob, 5, 20); // arm
+  if (player.hasKey) { ctx.fillStyle = '#e8c84a'; ctx.fillRect(sx + (player.dir > 0 ? 6 : -9), gy - 36 - bob, 4, 4); }
+}
+function drawFigure() {
+  if (!figure.active) return;
+  const sx = figure.x - cam;
+  if (sx < -80 || sx > W + 80) return;
+  const gy = FLOOR_Y + 66;
+  const dark = lights.mode === 'dark';
+  ctx.save();
+  ctx.globalAlpha = dark ? 0.97 : 0.88;
+  ctx.fillStyle = '#060606';
+  // impossibly tall, thin silhouette
+  ctx.fillRect(sx - 7, gy - 128, 14, 86);                        // torso
+  ctx.beginPath(); ctx.ellipse(sx, gy - 140, 9, 13, 0, 0, 7); ctx.fill(); // head
+  ctx.fillRect(sx - 9, gy - 122, 4, 62); ctx.fillRect(sx + 5, gy - 122, 4, 62); // arms hang too low
+  ctx.fillRect(sx - 6, gy - 42, 5, 42); ctx.fillRect(sx + 1, gy - 42, 5, 42);   // legs
+  ctx.restore();
+  if (dark) { // eyes, only in the dark
+    ctx.fillStyle = 'rgba(255,240,200,0.9)';
+    ctx.fillRect(sx - 4, gy - 142, 2, 2); ctx.fillRect(sx + 3, gy - 142, 2, 2);
+  }
+}
+function grain() {
+  ctx.fillStyle = 'rgba(255,255,255,0.05)';
+  for (let i = 0; i < 60; i++) ctx.fillRect(Math.random() * W, Math.random() * H, 1.4, 1.4);
+  ctx.fillStyle = 'rgba(0,0,0,0.06)';
+  for (let i = 0; i < 40; i++) ctx.fillRect(Math.random() * W, Math.random() * H, 2, 2);
+}
+function darkness() {
+  const L = lights.level;
+  if (L < 0.98) {
+    ctx.fillStyle = `rgba(2,2,6,${(1 - L) * 0.94})`; ctx.fillRect(0, 0, W, H);
+  }
+  // vignette always
+  const v = ctx.createRadialGradient(W / 2, H / 2, H * 0.42, W / 2, H / 2, H * 0.95);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,0.5)');
+  ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+}
+function drawFloaters() {
+  ctx.textAlign = 'center';
+  for (const f of floaters) {
+    const k = f.t / f.dur;
+    ctx.save();
+    ctx.globalAlpha = k < 0.15 ? k / 0.15 : 1 - Math.max(0, (k - 0.35) / 0.65);
+    ctx.font = 'bold 21px Chiller, Papyrus, Georgia, serif';
+    ctx.fillStyle = '#c11f1f';
+    ctx.shadowColor = 'rgba(0,0,0,0.85)'; ctx.shadowBlur = 4;
+    const sx = f.x - cam, sy = FLOOR_Y - 24 - k * 36;
+    ctx.fillText(f.text, sx, sy);
+    ctx.fillRect(sx - 1, sy + 5, 2, 5 + k * 8); // the drip
+    ctx.restore();
+  }
+}
+function drawHUD() {
+  ctx.textAlign = 'left'; ctx.font = '14px Georgia';
+  ctx.fillStyle = 'rgba(240,230,200,0.75)';
+  if (player.hasKey) ctx.fillText('— the brass key —', 18, 30);
+  ctx.textAlign = 'right'; ctx.font = 'bold 23px Chiller, Papyrus, Georgia, serif';
+  ctx.fillStyle = '#b01a1a';
+  ctx.fillText('SCORE ' + score, W - 18, 34);
+  ctx.textAlign = 'left';
+  if (msgT > 0 && msg) {
+    ctx.textAlign = 'center'; ctx.font = 'italic 21px Georgia';
+    ctx.fillStyle = 'rgba(245,238,214,0.92)';
+    ctx.fillText(msg, W / 2, 84);
+  }
+}
+function fmtTime(s) { const m = Math.floor(s / 60), ss = Math.floor(s % 60); return m + ':' + String(ss).padStart(2, '0'); }
+function drawTitle() {
+  ctx.fillStyle = '#070604'; ctx.fillRect(0, 0, W, H);
+  // lone door at the end of nothing
+  ctx.fillStyle = '#171310'; ctx.fillRect(W / 2 - 54, 150, 108, 272);
+  ctx.strokeStyle = '#4a1414'; ctx.lineWidth = 2; ctx.strokeRect(W / 2 - 54, 150, 108, 272);
+  ctx.fillStyle = '#8f1d1d'; ctx.font = 'bold 26px Georgia'; ctx.textAlign = 'center';
+  ctx.fillText('XIII', W / 2, 132);
+  ctx.fillStyle = '#e8dfc8'; ctx.font = 'bold 64px Georgia';
+  ctx.fillText('UNLUCKY XIII', W / 2, 84);
+  ctx.fillStyle = 'rgba(232,223,200,0.75)'; ctx.font = 'italic 19px Georgia';
+  ctx.fillText('a liminal horror micro-game', W / 2, 466);
+  ctx.font = '16px Georgia'; ctx.fillStyle = 'rgba(232,223,200,0.6)';
+  ctx.fillText('← → or A / D to walk — find the brass key, reach Door XIII', W / 2, 494);
+  ctx.fillText('it only moves in the dark', W / 2, 518);
+  if (Math.floor(performance.now() / 600) % 2 === 0) {
+    ctx.fillStyle = '#c9b98a'; ctx.font = 'bold 17px Georgia';
+    ctx.fillText('— press any key —', W / 2, 448 - 26);
+  }
+}
+function drawEnd(wonGame) {
+  ctx.fillStyle = wonGame ? '#0b0a08' : '#050505'; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  if (wonGame) {
+    ctx.fillStyle = '#e8dfc8'; ctx.font = 'bold 46px Georgia';
+    ctx.fillText('YOU WERE EXPECTED.', W / 2, 218);
+    ctx.font = 'italic 19px Georgia'; ctx.fillStyle = 'rgba(232,223,200,0.7)';
+    ctx.fillText('The door closes behind you. The humming stops.', W / 2, 264);
+    ctx.fillText('Time in the corridor: ' + fmtTime(runTime), W / 2, 300);
+    ctx.font = 'bold 28px Chiller, Papyrus, Georgia, serif'; ctx.fillStyle = '#b01a1a';
+    ctx.fillText('SCORE ' + score, W / 2, 342);
+  } else {
+    ctx.fillStyle = '#a31616'; ctx.font = 'bold 64px Georgia';
+    ctx.fillText('UNLUCKY.', W / 2, 228);
+    ctx.font = 'italic 19px Georgia'; ctx.fillStyle = 'rgba(232,223,200,0.7)';
+    ctx.fillText('It reached you in the dark.', W / 2, 274);
+    ctx.font = 'bold 24px Chiller, Papyrus, Georgia, serif'; ctx.fillStyle = '#b01a1a';
+    ctx.fillText('SCORE ' + score, W / 2, 314);
+  }
+  ctx.font = '16px Georgia'; ctx.fillStyle = 'rgba(232,223,200,0.55)';
+  ctx.fillText('press R to walk the corridor again', W / 2, 372);
+  ctx.font = '13px Georgia'; ctx.fillStyle = 'rgba(232,223,200,0.4)';
+  ctx.fillText('Made in one day for the Tuesday the 13th Jam · designed & coded with AI assistance (Muse) · all art in code, all sound synthesized', W / 2, 508);
+}
+function draw() {
+  if (state === 'title') return drawTitle();
+  if (state === 'win') return drawEnd(true);
+  if (state === 'lose') return drawEnd(false);
+  ctx.clearRect(0, 0, W, H);
+  drawCorridor();
+  drawFigure();
+  drawPlayer();
+  darkness();
+  grain();
+  drawFloaters();
+  drawHUD();
+}
+
+/* ---------------- main loop ---------------- */
+reset(); state = 'title';
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
