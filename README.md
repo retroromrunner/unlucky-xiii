@@ -1,5 +1,7 @@
 # UNLUCKY XIII
 
+🏆 **Scored 5/5 across the board** in the Tuesday the 13th Jam host's playthrough video (our segment runs 7:16–10:15).
+
 🕯️ **Play it now:** https://retroromrunner.github.io/unlucky-xiii/
 Also on itch.io — https://retroromrunner.itch.io/unlucky-xiii — where it was made for the Tuesday the 13th Jam.
 
